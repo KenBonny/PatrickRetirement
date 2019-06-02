@@ -1,0 +1,65 @@
+<html>
+    <head>
+        <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/twitter-bootstrap/4.3.1/css/bootstrap.min.css" />
+    </head>
+    <body>
+        <main class="container text-center">
+            <h3>Je gaat op <u id="retirementDate"></u> op pensioen</h3>
+            <p>Dat betekent dat je nog</p>
+            <h1 id="days" class="text-info"></h1>
+            <p>nachten moet slapen. Waarvan je er</p>
+            <h1 id="workdays" class="text-success"></h1>
+            <p>nog moet werken. <i>(Feestdagen niet inbegrepen!)</i></p>
+        </main>
+    </body>
+    <script>
+        function calculateDaysToGo(retirement) {
+            const today = new Date();
+            const timeDifference = Math.abs(retirement.getTime() - today.getTime());
+            const daysToGo = Math.ceil(timeDifference / (1000 * 3600 * 24));
+            return daysToGo;
+        }
+
+        function workingDaysToGo(retirement) {
+            var today = new Date();
+            // Validate input
+            if (retirement < today) {
+                return 0;
+            }
+            // Calculate days between dates
+            var millisecondsPerDay = 86400 * 1000; // Day in milliseconds
+            today.setHours(0,0,0,1);  // Start just after midnight
+            retirement.setHours(23,59,59,999);  // End just before midnight
+            var diff = retirement - today;  // Milliseconds between datetime objects    
+            var days = Math.ceil(diff / millisecondsPerDay);
+            
+            // Subtract two weekend days for every week in between
+            var weeks = Math.floor(days / 7);
+            days -= weeks * 2;
+        
+            // Handle special cases
+            var startDay = today.getDay();
+            var endDay = retirement.getDay();
+            
+            // Remove weekend not previously removed.   
+            if (startDay - endDay > 1) {
+                days -= 2;
+            }
+            // Remove start day if span starts on Sunday but ends before Saturday
+            if (startDay == 0 && endDay != 6) {
+                days--;  
+            }
+            // Remove end day if span ends on Saturday but starts after Sunday
+            if (endDay == 6 && startDay != 0) {
+                days--;
+            }
+            return days;
+        }
+
+        const retirementDate = new Date('2023-12-31');
+        document.getElementById('days').innerHTML = calculateDaysToGo(retirementDate);
+        document.getElementById('workdays').innerHTML = workingDaysToGo(retirementDate);
+        var options = { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' };
+        document.getElementById('retirementDate').innerHTML = retirementDate.toLocaleDateString('nl-BE', options);
+    </script>
+</html>

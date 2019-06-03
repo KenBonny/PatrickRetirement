@@ -3,7 +3,7 @@
         <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/twitter-bootstrap/4.3.1/css/bootstrap.min.css" />
     </head>
     <body>
-        <main class="container text-center">
+        <main class="container text-center" id="main">
             <h3>Je gaat op <u id="retirementDate"></u> op pensioen</h3>
             <p>Dat betekent dat je nog</p>
             <h1 id="days" class="text-info"></h1>
@@ -57,9 +57,13 @@
         }
 
         const retirementDate = new Date('2023-12-31');
-        document.getElementById('days').innerHTML = calculateDaysToGo(retirementDate);
+        const daysToGo = calculateDaysToGo(retirementDate);
+        document.getElementById('days').innerHTML = daysToGo;
         document.getElementById('workdays').innerHTML = workingDaysToGo(retirementDate);
         var options = { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' };
         document.getElementById('retirementDate').innerHTML = retirementDate.toLocaleDateString('nl-BE', options);
+        if (daysToGo <= 0){
+            document.getElementById('main').innerHTML = '<h1 class="text-danger">GEDAAN MET WERKEN!!!</h1>'
+        }
     </script>
 </html>

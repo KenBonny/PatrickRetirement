@@ -1,71 +1,421 @@
-<html>
+<!doctype html>
+<html lang="nl">
     <head>
-        <title>Wanneer mag Patrick op Pensioen?</title>
+        <meta charset="utf-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1" />
+        <title>Aftellen</title>
         <link rel="shortcut icon" href="http://pngimg.com/uploads/question_mark/question_mark_PNG74.png" />
         <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/twitter-bootstrap/4.3.1/css/bootstrap.min.css" />
+        <style>
+            #main { position: relative; z-index: 1; padding-top: 2rem; }
+            #celebration { position: fixed; inset: 0; width: 100%; height: 100%; z-index: 0; pointer-events: none; }
+            #endDateForm { max-width: 20rem; margin: 0 auto; }
+        </style>
     </head>
     <body>
-        <main class="container text-center" id="main">
-            <h3>Je gaat op <u id="retirementDate"></u> op pensioen</h3>
-            <p>Dat betekent dat je nog</p>
-            <h1 id="days" class="text-info"></h1>
-            <p>nachten moet slapen. Na dat slapen moet je ook nog</p>
-            <h1 id="workdays" class="text-success"></h1>
-            <p>dagen werken. <i>(Feestdagen worden geteld als dagen te werken!)</i></p>
-        </main>
+        <main class="container text-center" id="main"></main>
     </body>
     <script>
-        function calculateDaysToGo(retirement) {
-            const today = new Date();
-            const timeDifference = Math.abs(retirement.getTime() - today.getTime());
-            const daysToGo = Math.ceil(timeDifference / (1000 * 3600 * 24));
-            return daysToGo;
-        }
+        // @ts-check
 
-        function workingDaysToGo(retirement) {
-            var today = new Date();
-            // Validate input
-            if (retirement < today) {
-                return 0;
-            }
-            // Calculate days between dates
-            var millisecondsPerDay = 86400 * 1000; // Day in milliseconds
-            today.setHours(0,0,0,1);  // Start just after midnight
-            retirement.setHours(23,59,59,999);  // End just before midnight
-            var diff = retirement - today;  // Milliseconds between datetime objects    
-            var days = Math.ceil(diff / millisecondsPerDay);
-            
-            // Subtract two weekend days for every week in between
-            var weeks = Math.floor(days / 7);
-            days -= weeks * 2;
-        
-            // Handle special cases
-            var startDay = today.getDay();
-            var endDay = retirement.getDay();
-            
-            // Remove weekend not previously removed.   
-            if (startDay - endDay > 1) {
-                days -= 2;
-            }
-            // Remove start day if span starts on Sunday but ends before Saturday
-            if (startDay == 0 && endDay != 6) {
-                days--;  
-            }
-            // Remove end day if span ends on Saturday but starts after Sunday
-            if (endDay == 6 && startDay != 0) {
-                days--;
-            }
-            return days;
-        }
+        const STORAGE_KEY = 'countdown.endDate';
+        const MS_PER_DAY = 86400 * 1000;
 
-        const retirementDate = new Date('2023-12-31');
-        const daysToGo = calculateDaysToGo(retirementDate);
-        document.getElementById('days').innerHTML = daysToGo;
-        document.getElementById('workdays').innerHTML = workingDaysToGo(retirementDate);
-        var options = { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' };
-        document.getElementById('retirementDate').innerHTML = retirementDate.toLocaleDateString('nl-BE', options);
-        if (daysToGo <= 0){
-            document.getElementById('main').innerHTML = '<h1 class="text-danger">GEDAAN MET WERKEN!!!</h1>'
-        }
+        // ---- Date logic (pure) ----
+
+        /** @param {Date} date @returns {Date} midnight of that local calendar day */
+        const startOfDay = date => new Date(date.getFullYear(), date.getMonth(), date.getDate());
+
+        /** @param {Date} [now] @returns {Date} */
+        const todayLocal = (now = new Date()) => startOfDay(now);
+
+        /** @param {Date} date @param {number} days @returns {Date} */
+        const addDays = (date, days) => new Date(date.getFullYear(), date.getMonth(), date.getDate() + days);
+
+        /** @param {number} n @returns {string} */
+        const pad2 = n => String(n).padStart(2, '0');
+
+        /** @param {Date} date @returns {string} YYYY-MM-DD in local time */
+        const toKey = date => `${date.getFullYear()}-${pad2(date.getMonth() + 1)}-${pad2(date.getDate())}`;
+
+        /**
+         * Parses a YYYY-MM-DD string as a local calendar date (never as UTC).
+         * @param {string | null | undefined} value
+         * @returns {Date | null}
+         */
+        const parseDate = value => {
+            const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value ?? '');
+            if (!match) return null;
+            const [year, month, day] = match.slice(1).map(Number);
+            const date = new Date(year, month - 1, day);
+            const isRealDate = date.getFullYear() === year && date.getMonth() === month - 1 && date.getDate() === day;
+            return isRealDate ? date : null;
+        };
+
+        /** @param {Date} date @returns {number} */
+        const utcDay = date => Date.UTC(date.getFullYear(), date.getMonth(), date.getDate());
+
+        /** Calendar days from today to end; DST-proof because both sides are UTC midnights. */
+        /** @param {Date} today @param {Date} end @returns {number} */
+        const nightsUntil = (today, end) => Math.round((utcDay(end) - utcDay(today)) / MS_PER_DAY);
+
+        /** Anonymous Gregorian (Meeus/Jones/Butcher) algorithm. */
+        /** @param {number} year @returns {Date} */
+        const easterSunday = year => {
+            const a = year % 19;
+            const b = Math.floor(year / 100);
+            const c = year % 100;
+            const d = Math.floor(b / 4);
+            const e = b % 4;
+            const f = Math.floor((b + 8) / 25);
+            const g = Math.floor((b - f + 1) / 3);
+            const h = (19 * a + b - d - g + 15) % 30;
+            const i = Math.floor(c / 4);
+            const k = c % 4;
+            const l = (32 + 2 * e + 2 * i - h - k) % 7;
+            const m = Math.floor((a + 11 * h + 22 * l) / 451);
+            const month = Math.floor((h + l - 7 * m + 114) / 31);
+            const day = ((h + l - 7 * m + 114) % 31) + 1;
+            return new Date(year, month - 1, day);
+        };
+
+        /** The ten Belgian legal public holidays. */
+        /** @param {number} year @returns {string[]} YYYY-MM-DD keys */
+        const belgianHolidays = year => {
+            const easter = easterSunday(year);
+            const fixed = [[1, 1], [5, 1], [7, 21], [8, 15], [11, 1], [11, 11], [12, 25]]
+                .map(([month, day]) => new Date(year, month - 1, day));
+            const moveable = [1, 39, 50].map(offset => addDays(easter, offset));
+            return [...fixed, ...moveable]
+                .sort((x, y) => x.getTime() - y.getTime())
+                .map(toKey);
+        };
+
+        /** @param {number} length @returns {number[]} */
+        const range = length => Array.from({ length: Math.max(0, length) }, (_, i) => i);
+
+        /** Mon–Fri days in [today, end) that are not Belgian public holidays. */
+        /** @param {Date} today @param {Date} end @returns {number} */
+        const workdaysUntil = (today, end) => {
+            const days = range(nightsUntil(today, end)).map(offset => addDays(today, offset));
+            const years = [...new Set(days.map(day => day.getFullYear()))];
+            const holidays = new Set(years.flatMap(belgianHolidays));
+            const isWeekend = (/** @type {Date} */ day) => day.getDay() === 0 || day.getDay() === 6;
+            return days.filter(day => !isWeekend(day) && !holidays.has(toKey(day))).length;
+        };
+
+        /** @typedef {'entry' | 'countdown' | 'celebration'} View */
+
+        /** @param {Date} today @param {Date | null} end @returns {View} */
+        const viewFor = (today, end) =>
+            end === null ? 'entry'
+            : nightsUntil(today, end) > 0 ? 'countdown'
+            : 'celebration';
+
+        /** Runs the spec scenarios; call from the DevTools console. */
+        const selfCheck = () => {
+            const d = (/** @type {string} */ key) => /** @type {Date} */ (parseDate(key));
+            const checks = [
+                ['end = tomorrow → 1 night', nightsUntil(d('2026-11-10'), d('2026-11-11')), 1],
+                ['Friday → Monday → 1 workday', workdaysUntil(d('2026-11-13'), d('2026-11-16')), 1],
+                ['Wed 10 Nov 2027 → Fri 12 Nov 2027 → 1 workday', workdaysUntil(d('2027-11-10'), d('2027-11-12')), 1],
+                ['holiday on weekend not double-subtracted (Sun 1 Nov 2026 week)', workdaysUntil(d('2026-10-31'), d('2026-11-07')), 5],
+                ['Easter 2026 = 5 April', toKey(easterSunday(2026)), '2026-04-05'],
+                ['Easter 2027 = 28 March', toKey(easterSunday(2027)), '2027-03-28'],
+                ['2027 moveable holidays', belgianHolidays(2027).filter(key => ['2027-03-29', '2027-05-06', '2027-05-17'].includes(key)).length, 3],
+                ['2027 has 10 holidays', belgianHolidays(2027).length, 10],
+                ['across last Sunday of March 2027 → exact days', nightsUntil(d('2027-03-27'), d('2027-03-29')), 2],
+                ['across last Sunday of October 2026 → exact days', nightsUntil(d('2026-10-24'), d('2026-10-27')), 3],
+                ['today → celebration', viewFor(d('2026-11-10'), d('2026-11-10')), 'celebration'],
+                ['past → celebration', viewFor(d('2026-11-10'), d('2025-01-01')), 'celebration'],
+                ['future → countdown', viewFor(d('2026-11-10'), d('2026-12-31')), 'countdown'],
+                ['invalid string → null', parseDate('2026-02-30'), null],
+                ['garbage → null', parseDate('morgen'), null],
+            ].map(([name, actual, expected]) => ({ name, actual, expected, pass: actual === expected }));
+            console.table(checks);
+            return checks.every(check => check.pass);
+        };
+
+        // ---- Storage (edge) ----
+
+        /** Fallback when localStorage is blocked. */
+        /** @type {string | null} */
+        let memoryEndDate = null;
+
+        /** @returns {string | null} */
+        const loadEndDate = () => {
+            try {
+                return localStorage.getItem(STORAGE_KEY) ?? memoryEndDate;
+            } catch {
+                return memoryEndDate;
+            }
+        };
+
+        /** @param {string} value */
+        const saveEndDate = value => {
+            memoryEndDate = value;
+            try {
+                localStorage.setItem(STORAGE_KEY, value);
+            } catch {
+                // Storage unavailable: keep the in-memory value for this page load.
+            }
+        };
+
+        // ---- Celebration animation (edge) ----
+
+        const COLOURS = ['#e63946', '#f4a261', '#2a9d8f', '#457b9d', '#9b5de5', '#f15bb5', '#00bbf9', '#fee440'];
+        const MAX_PARTICLES = 600;
+        const MAX_BALLOONS = 25;
+
+        /** @template T @param {T[]} items @returns {T} */
+        const pick = items => items[Math.floor(Math.random() * items.length)];
+
+        /** @param {number} min @param {number} max @returns {number} */
+        const between = (min, max) => min + Math.random() * (max - min);
+
+        /** @typedef {{ x: number, y: number, vx: number, vy: number, life: number, colour: string }} Particle */
+        /** @typedef {{ x: number, y: number, vy: number, radius: number, phase: number, colour: string }} Balloon */
+
+        /** @param {number} width @param {number} height @returns {Particle[]} */
+        const burst = (width, height) => {
+            const x = between(width * 0.1, width * 0.9);
+            const y = between(height * 0.1, height * 0.5);
+            const colour = pick(COLOURS);
+            return range(70).map(() => {
+                const angle = Math.random() * Math.PI * 2;
+                const speed = between(1, 5);
+                return { x, y, vx: Math.cos(angle) * speed, vy: Math.sin(angle) * speed, life: 1, colour };
+            });
+        };
+
+        /** @param {number} width @param {number} y @returns {Balloon} */
+        const balloon = (width, y) => ({
+            x: between(0, width),
+            y,
+            vy: between(0.6, 1.4),
+            radius: between(18, 30),
+            phase: Math.random() * Math.PI * 2,
+            colour: pick(COLOURS),
+        });
+
+        /** @param {Particle} p @param {number} dt @returns {Particle} */
+        const stepParticle = (p, dt) => ({
+            ...p,
+            x: p.x + p.vx * dt,
+            y: p.y + p.vy * dt,
+            vx: p.vx * 0.98,
+            vy: p.vy * 0.98 + 0.05 * dt,
+            life: p.life - 0.012 * dt,
+        });
+
+        /** @param {Balloon} b @param {number} dt @returns {Balloon} */
+        const stepBalloon = (b, dt) => ({ ...b, y: b.y + b.vy * dt, phase: b.phase + 0.03 * dt });
+
+        /** @param {CanvasRenderingContext2D} ctx @param {Particle} p */
+        const drawParticle = (ctx, p) => {
+            ctx.globalAlpha = Math.max(0, p.life);
+            ctx.fillStyle = p.colour;
+            ctx.beginPath();
+            ctx.arc(p.x, p.y, 2.5, 0, Math.PI * 2);
+            ctx.fill();
+        };
+
+        /** @param {CanvasRenderingContext2D} ctx @param {Balloon} b */
+        const drawBalloon = (ctx, b) => {
+            const x = b.x + Math.sin(b.phase) * 20;
+            const bottom = b.y + b.radius * 1.2;
+            ctx.globalAlpha = 0.9;
+            ctx.strokeStyle = '#888';
+            ctx.lineWidth = 1;
+            ctx.beginPath();
+            ctx.moveTo(x, bottom);
+            ctx.quadraticCurveTo(x + 10, bottom + b.radius, x, bottom + b.radius * 2.5);
+            ctx.stroke();
+            ctx.fillStyle = b.colour;
+            ctx.beginPath();
+            ctx.ellipse(x, b.y, b.radius, b.radius * 1.2, 0, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.beginPath();
+            ctx.moveTo(x - 4, bottom + 5);
+            ctx.lineTo(x + 4, bottom + 5);
+            ctx.lineTo(x, bottom - 1);
+            ctx.fill();
+        };
+
+        /**
+         * Starts fireworks and falling balloons on a full-viewport canvas.
+         * @returns {() => void} stops the animation and removes the canvas
+         */
+        const startCelebration = () => {
+            const canvas = document.createElement('canvas');
+            canvas.id = 'celebration';
+            document.body.prepend(canvas);
+            const ctx = /** @type {CanvasRenderingContext2D} */ (canvas.getContext('2d'));
+            const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+            const size = () => ({ width: window.innerWidth, height: window.innerHeight });
+            const resize = () => {
+                const { width, height } = size();
+                const ratio = window.devicePixelRatio || 1;
+                canvas.width = width * ratio;
+                canvas.height = height * ratio;
+                ctx.setTransform(ratio, 0, 0, ratio, 0, 0);
+            };
+
+            /** @param {Particle[]} particles @param {Balloon[]} balloons */
+            const draw = (particles, balloons) => {
+                const { width, height } = size();
+                ctx.clearRect(0, 0, width, height);
+                balloons.forEach(b => drawBalloon(ctx, b));
+                particles.forEach(p => drawParticle(ctx, p));
+                ctx.globalAlpha = 1;
+            };
+
+            /** @type {Balloon[]} */
+            const staticBalloons = range(15).map(() => balloon(size().width, between(0, size().height)));
+            const drawStatic = () => { resize(); draw([], staticBalloons); };
+
+            if (reducedMotion) {
+                drawStatic();
+                window.addEventListener('resize', drawStatic);
+                return () => {
+                    window.removeEventListener('resize', drawStatic);
+                    canvas.remove();
+                };
+            }
+
+            /** @type {Particle[]} */
+            let particles = [];
+            /** @type {Balloon[]} */
+            let balloons = [];
+            let frame = 0;
+            let last = 0;
+
+            /** @param {number} time */
+            const tickFrame = time => {
+                const dt = last === 0 ? 1 : Math.min(50, time - last) / (1000 / 60);
+                last = time;
+                const { width, height } = size();
+                const newBurst = Math.random() < 0.03 * dt && particles.length < MAX_PARTICLES ? burst(width, height) : [];
+                const newBalloon = Math.random() < 0.04 * dt && balloons.length < MAX_BALLOONS ? [balloon(width, -60)] : [];
+                particles = [...particles, ...newBurst].map(p => stepParticle(p, dt)).filter(p => p.life > 0);
+                balloons = [...balloons, ...newBalloon].map(b => stepBalloon(b, dt)).filter(b => b.y - b.radius * 1.2 < height);
+                draw(particles, balloons);
+                frame = requestAnimationFrame(tickFrame);
+            };
+
+            const play = () => { last = 0; frame = requestAnimationFrame(tickFrame); };
+            const pause = () => cancelAnimationFrame(frame);
+            const onVisibility = () => (document.hidden ? pause() : play());
+
+            resize();
+            window.addEventListener('resize', resize);
+            document.addEventListener('visibilitychange', onVisibility);
+            if (!document.hidden) play();
+
+            return () => {
+                pause();
+                window.removeEventListener('resize', resize);
+                document.removeEventListener('visibilitychange', onVisibility);
+                canvas.remove();
+            };
+        };
+
+        // ---- Views (edge) ----
+
+        /** @param {Date} date @returns {string} */
+        const formatLong = date =>
+            date.toLocaleDateString('nl-BE', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });
+
+        /** @param {number} count @param {string} one @param {string} many @returns {string} */
+        const plural = (count, one, many) => (count === 1 ? one : many);
+
+        const changeDateButton = '<button type="button" class="btn btn-link" data-action="change-date">Datum wijzigen</button>';
+
+        /** @param {string} prefill @returns {string} */
+        const entryHtml = prefill => `
+            <h3>Tot wanneer wil je aftellen?</h3>
+            <form id="endDateForm" class="mt-4">
+                <div class="form-group">
+                    <label for="endDate">Einddatum</label>
+                    <input type="date" id="endDate" name="endDate" class="form-control" required value="${prefill}" />
+                </div>
+                <button type="submit" class="btn btn-primary">Start aftellen</button>
+            </form>`;
+
+        /** @param {Date} end @param {number} nights @param {number} workdays @returns {string} */
+        const countdownHtml = (end, nights, workdays) => `
+            <h3>Nog even geduld tot <u>${formatLong(end)}</u></h3>
+            <p>Dat betekent dat je nog</p>
+            <h1 class="text-info">${nights}</h1>
+            <p>${plural(nights, 'nacht', 'nachten')} moet slapen. Daarvan moet je nog</p>
+            <h1 class="text-success">${workdays}</h1>
+            <p>${plural(workdays, 'dag', 'dagen')} werken. <i>(Weekends en Belgische feestdagen tellen niet mee.)</i></p>
+            ${changeDateButton}`;
+
+        /** @param {Date} end @returns {string} */
+        const celebrationHtml = end => `
+            <h1 class="display-3 text-danger mt-5">Het is zover!</h1>
+            <h3>${formatLong(end)}</h3>
+            ${changeDateButton}`;
+
+        // ---- App (edge) ----
+
+        const main = /** @type {HTMLElement} */ (document.getElementById('main'));
+
+        /** @type {{ editing: boolean, rendered: string, stopCelebration: () => void }} */
+        const app = { editing: false, rendered: '', stopCelebration: () => {} };
+
+        /**
+         * @param {Date} today
+         * @returns {{ view: View, endKey: string, nights: number, workdays: number }}
+         */
+        const stateFor = today => {
+            const end = parseDate(loadEndDate());
+            const view = app.editing ? 'entry' : viewFor(today, end);
+            return view === 'countdown' && end
+                ? { view, endKey: toKey(end), nights: nightsUntil(today, end), workdays: workdaysUntil(today, end) }
+                : { view, endKey: end ? toKey(end) : '', nights: 0, workdays: 0 };
+        };
+
+        /** @param {ReturnType<typeof stateFor>} state */
+        const render = state => {
+            app.stopCelebration();
+            app.stopCelebration = () => {};
+            app.rendered = JSON.stringify(state);
+            const end = parseDate(state.endKey);
+            main.innerHTML =
+                state.view === 'countdown' && end ? countdownHtml(end, state.nights, state.workdays)
+                : state.view === 'celebration' && end ? celebrationHtml(end)
+                : entryHtml(state.endKey);
+            if (state.view === 'celebration') app.stopCelebration = startCelebration();
+        };
+
+        /** Re-renders only when something visible changed, so animations don't restart. */
+        const tick = (today = todayLocal()) => {
+            const state = stateFor(today);
+            if (JSON.stringify(state) !== app.rendered) render(state);
+        };
+
+        main.addEventListener('submit', event => {
+            event.preventDefault();
+            const input = /** @type {HTMLInputElement | null} */ (main.querySelector('#endDate'));
+            const end = parseDate(input?.value);
+            if (!end) return;
+            saveEndDate(toKey(end));
+            app.editing = false;
+            tick();
+        });
+
+        main.addEventListener('click', event => {
+            const target = /** @type {HTMLElement} */ (event.target);
+            if (target.dataset.action !== 'change-date') return;
+            app.editing = true;
+            tick();
+            /** @type {HTMLInputElement | null} */ (main.querySelector('#endDate'))?.focus();
+        });
+
+        tick();
+        setInterval(tick, 60 * 1000);
     </script>
 </html>
